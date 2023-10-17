@@ -93,3 +93,29 @@ class RGBTo01Normalization(ImageNormalization):
         image = image / 255.
         return image
 
+
+class WindowedCTNormalization(ImageNormalization):
+    def __init__(self, window_level, window_width,
+                 grayscale: bool = False,
+                 epsilon: float = 1e-6,
+                 use_mask_for_norm: bool = None,
+                 intensityproperties: dict = None,
+                 target_dtype: type[number] = np.float32):
+        super().__init__(use_mask_for_norm, intensityproperties, target_dtype)
+        self.window_level = window_level
+        self.window_width = window_width
+        self.grayscale = grayscale
+        self.e = epsilon
+
+    def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
+        delta = self.window_width / 2.0
+        lower = self.window_level - delta
+        upper = self.window_level + delta
+        image = image.astype(self.target_dtype)
+        np.clip(image, lower, upper, out=image)
+        it = np.nditer(image, flags='multi_index')
+        for voxel in it:
+            image[it.multi_index] = (voxel - lower + self.e) / (upper - lower + self.e)
+        if self.grayscale:
+            image = np.around(image, decimals=0)
+        return image
