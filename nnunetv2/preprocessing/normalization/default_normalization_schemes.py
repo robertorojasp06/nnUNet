@@ -95,7 +95,8 @@ class RGBTo01Normalization(ImageNormalization):
 
 
 class WindowedCTNormalization(ImageNormalization):
-    def __init__(self, window_level, window_width,
+    def __init__(self, window_level: float = None,
+                 window_width: float = None,
                  epsilon: float = 1e-6,
                  use_mask_for_norm: bool = None,
                  intensityproperties: dict = None,
@@ -106,6 +107,8 @@ class WindowedCTNormalization(ImageNormalization):
         self.e = epsilon
 
     def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
+        assert self.window_level is not None, "WindowedCTNormalization requires window level"
+        assert self.window_width is not None, "WindowedCTNormalization requires window width"
         delta = self.window_width / 2.0
         lower = self.window_level - delta
         upper = self.window_level + delta
