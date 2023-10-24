@@ -116,3 +116,23 @@ class WindowedCTNormalization(ImageNormalization):
         np.clip(image, lower, upper, out=image)
         image = (image - lower + self.e) / (upper - lower + self.e)
         return image
+
+
+class WindowedCTLung(WindowedCTNormalization):
+    def __init__(self, 
+                 epsilon: float = 0.000001,
+                 use_mask_for_norm: bool = None,
+                 intensityproperties: dict = None,
+                 target_dtype: type[number] = np.float32):
+        super().__init__(-500, 1400, epsilon, use_mask_for_norm,
+                         intensityproperties, target_dtype)
+
+
+class WindowedCTAbdomen(WindowedCTNormalization):
+    def __init__(self, 
+                 epsilon: float = 0.000001,
+                 use_mask_for_norm: bool = None,
+                 intensityproperties: dict = None,
+                 target_dtype: type[number] = np.float32):
+        super().__init__(40, 350, epsilon, use_mask_for_norm,
+                         intensityproperties, target_dtype)
