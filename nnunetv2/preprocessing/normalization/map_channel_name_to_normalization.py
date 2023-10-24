@@ -5,7 +5,7 @@ from nnunetv2.preprocessing.normalization.default_normalization_schemes import C
     WindowedCTLung, WindowedCTAbdomen
 
 channel_name_to_normalization_mapping = {
-    'CT': WindowedCTLung,
+    'CT': CTNormalization,
     'noNorm': NoNormalization,
     'zscore': ZScoreNormalization,
     'rescale_to_0_1': RescaleTo01Normalization,
