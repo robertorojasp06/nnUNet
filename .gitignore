@@ -11,6 +11,9 @@ __pycache__/
 env/
 build/
 
+# Jupyter Notebook
+.ipynb_checkpoints
+
 data/
 results/
 notebooks/resources
