@@ -136,3 +136,16 @@ class WindowedCTAbdomen(WindowedCTNormalization):
                  target_dtype: type[number] = np.float32):
         super().__init__(40, 350, epsilon, use_mask_for_norm,
                          intensityproperties, target_dtype)
+
+
+class CTTo01Normalization(ImageNormalization):
+    leaves_pixels_outside_mask_at_zero_if_use_mask_for_norm_is_true = False
+
+    def run(self, image: np.ndarray, seg: np.ndarray = None) -> np.ndarray:
+        assert self.intensityproperties is not None, "CTNormalization requires intensity properties"
+        image = image.astype(self.target_dtype)
+        lower_bound = self.intensityproperties['percentile_00_5']
+        upper_bound = self.intensityproperties['percentile_99_5']
+        image = np.clip(image, lower_bound, upper_bound)
+        image = (image - lower_bound + 1e-8) / (upper_bound - lower_bound + 1e-8)
+        return image
