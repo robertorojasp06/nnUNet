@@ -50,7 +50,7 @@ class MSDConverter:
         }
         self.colon_params = {
             'nnunet_dataset_id': 510,
-            'task_name': 'Task10_Lung',
+            'task_name': 'Task10_Colon',
             'labels': {
                 "background": 0,
                 "tumor": 1
