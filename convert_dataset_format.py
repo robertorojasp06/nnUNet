@@ -74,7 +74,7 @@ class MSDConverter:
         studies_count = 0
         identifiers = []
         studies = Path(path_to_cts).glob(f"*{self.fname_extension}")
-        for source_ct in studies:
+        for source_ct in tqdm(studies):
             source_mask = Path(path_to_masks) / source_ct.name
             identifier = f"{source_ct.name.split(self.fname_extension)[0]}"
             identifiers.append(identifier)
@@ -149,6 +149,83 @@ class MSDConverter:
         )
 
 
+class KiTS19Converter:
+    def __init__(self) -> None:
+        self.params = {
+            'nnunet_dataset_id': 511,
+            'task_name': 'KiTS19_Kidney',
+            'labels': {
+                "background": 0,
+                "kidney": 1,
+                "tumor": 2
+            },
+            'description': (
+                "CT studies from dataset kits19 hosted "
+                "in the github repository 'https://github.com/neheller/kits19'."
+            )
+        }
+        self.fname_extension = '.nii.gz'
+
+    def convert_dataset(self, path_to_studies, seed=None):
+        foldername = f"Dataset{self.params['nnunet_dataset_id']:03d}_{self.params['task_name']}"
+        # Set up output folders
+        path_to_output_base = Path(nnUNet_raw) / foldername
+        path_to_output_cts = path_to_output_base / "imagesTr"
+        path_to_output_masks = path_to_output_base / "labelsTr"
+        path_to_output_cts.mkdir(parents=True, exist_ok=True)
+        path_to_output_masks.mkdir(exist_ok=True)
+        # Copy data volumen with proper filename format
+        studies_count = 0
+        identifiers = []
+        studies = [
+            item
+            for item in Path(path_to_studies).iterdir()
+            if item.is_dir() and len(list(item.glob(f"*{self.fname_extension}"))) == 2
+        ]
+        for study in tqdm(studies):
+            source_ct = study / 'imaging.nii.gz'
+            source_mask = study / 'segmentation.nii.gz'
+            identifier = study.name
+            identifiers.append(identifier)
+            dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
+            dest_mask = path_to_output_masks / f"{identifier}{self.fname_extension}"
+            shutil.copy(source_ct, dest_ct)
+            shutil.copy(source_mask, dest_mask)
+            studies_count += 1
+        # Generate JSON containing metadata required for training
+        channel_names = {
+            0: "CT"
+        }
+        generate_dataset_json(
+            path_to_output_base,
+            channel_names,
+            labels=self.params['labels'],
+            num_training_cases=studies_count,
+            file_ending=self.fname_extension,
+            dataset_name=self.params['task_name'],
+            reference='https://github.com/neheller/kits19',
+            description=self.params['description']
+        )
+        # Manual split
+        splits = []
+        if not seed:
+            seed = random.randint(0, 2**16 - 1)
+        random.seed(seed)
+        random.shuffle(identifiers)
+        for fold in tqdm(range(5)):
+            val_studies = identifiers[fold :: 5]
+            splits.append(
+                {
+                    'train': [i for i in identifiers if i not in val_studies],
+                    'val': val_studies
+                }
+            )
+        path_to_output = Path(nnUNet_preprocessed) / foldername
+        path_to_output.mkdir(exist_ok=True)
+        with open(path_to_output / 'splits_final.json', 'w') as f:
+            json.dump(splits, f, sort_keys=False, indent=4)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""Convert original CT datasets into the nnUnet format.""",
@@ -158,19 +235,24 @@ if __name__ == "__main__":
         'path_to_cts',
         type=str,
         help="""Path to the folder containing original CT volumes in
-        NIfTI format."""
-    )
-    parser.add_argument(
-        'path_to_masks',
-        type=str,
-        help="""Path to the folder containing original mask volumes in
-        NIfTI format."""
+        NIfTI format. Path the to the directory containing the studies folders
+        if that is the format of the original dataset."""
     )
     parser.add_argument(
         'dataset',
-        choices=['msd-liver', 'msd-lung', 'msd-pancreas', 'msd-colon'],
+        choices=[
+            'msd-liver', 'msd-lung', 'msd-pancreas', 'msd-colon',
+            'kits19'
+        ],
         help="""Dataset to be converted. This option sets the parameters
         for conversion."""
+    )
+    parser.add_argument(
+        '--path_to_masks',
+        type=str,
+        default=None,
+        help="""Path to the folder containing original mask volumes in
+        NIfTI format."""
     )
     parser.add_argument(
         '--seed',
@@ -180,28 +262,34 @@ if __name__ == "__main__":
         validation."""
     )
     args = parser.parse_args()
-    converter = MSDConverter()
-    if args.dataset == 'msd-liver':
-        converter.convert_liver(
-            args.path_to_cts,
-            args.path_to_masks,
-            args.seed
-        )
-    elif args.dataset == 'msd-lung':
-        converter.convert_lung(
-            args.path_to_cts,
-            args.path_to_masks,
-            args.seed
-        )
-    elif args.dataset == 'msd-pancreas':
-        converter.convert_pancreas(
-            args.path_to_cts,
-            args.path_to_masks,
-            args.seed
-        )
-    elif args.dataset == 'msd-colon':
-        converter.convert_colon(
-            args.path_to_cts,
-            args.path_to_masks,
-            args.seed
-        )
+    if args.dataset in ('msd-liver', 'msd-lung', 'msd-pancreas', 'msd-colon'):
+        if not args.path_to_masks:
+            raise ValueError("Path to mask volumes must be specified.")
+        converter = MSDConverter()
+        if args.dataset == 'msd-liver':
+            converter.convert_liver(
+                args.path_to_cts,
+                args.path_to_masks,
+                args.seed
+            )
+        elif args.dataset == 'msd-lung':
+            converter.convert_lung(
+                args.path_to_cts,
+                args.path_to_masks,
+                args.seed
+            )
+        elif args.dataset == 'msd-pancreas':
+            converter.convert_pancreas(
+                args.path_to_cts,
+                args.path_to_masks,
+                args.seed
+            )
+        elif args.dataset == 'msd-colon':
+            converter.convert_colon(
+                args.path_to_cts,
+                args.path_to_masks,
+                args.seed
+            )
+    elif args.dataset == 'kits19':
+        converter = KiTS19Converter()
+        converter.convert_dataset(args.path_to_cts, args.seed)
