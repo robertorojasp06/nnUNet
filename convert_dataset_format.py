@@ -150,6 +150,7 @@ class MSDConverter:
 
 
 class KiTS19Converter:
+    """Convert dataset from Kidney Tumor Segmentation (KiTS19) into nnunet format."""
     def __init__(self) -> None:
         self.params = {
             'nnunet_dataset_id': 511,
@@ -226,6 +227,78 @@ class KiTS19Converter:
             json.dump(splits, f, sort_keys=False, indent=4)
 
 
+class CTLymphNodesConverter:
+    """Convert dataset CT Lymph Nodes into nnunet format."""
+    def __init__(self) -> None:
+        self.params = {
+            'nnunet_dataset_id': 512,
+            'task_name': 'CTLN_LymphNodes',
+            'labels': {
+                "background": 0,
+                "lymph_node": 1
+            },
+            'description': (
+                "CT studies from dataset CT Lymph Nodes hosted "
+                "in the TCIA repository https://wiki.cancerimagingarchive.net/pages/viewpage.action?pageId=19726546"
+            )
+        }
+        self.fname_extension = '.nii.gz'
+
+    def convert_dataset(self, path_to_cts, path_to_masks, seed=None):
+        foldername = f"Dataset{self.params['nnunet_dataset_id']:03d}_{self.params['task_name']}"
+        # Set up output folders
+        path_to_output_base = Path(nnUNet_raw) / foldername
+        path_to_output_cts = path_to_output_base / "imagesTr"
+        path_to_output_masks = path_to_output_base / "labelsTr"
+        path_to_output_cts.mkdir(parents=True, exist_ok=True)
+        path_to_output_masks.mkdir(exist_ok=True)
+        # Copy data volumen with proper filename format
+        studies_count = 0
+        identifiers = []
+        studies = list(Path(path_to_cts).glob(f"*{self.fname_extension}"))
+        for source_ct in tqdm(studies):
+            source_mask = Path(path_to_masks) / source_ct.name
+            identifier = f"{source_ct.name.split(self.fname_extension)[0]}"
+            identifiers.append(identifier)
+            dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
+            dest_mask = path_to_output_masks / f"{identifier}{self.fname_extension}"
+            shutil.copy(source_ct, dest_ct)
+            shutil.copy(source_mask, dest_mask)
+            studies_count += 1
+        # Generate JSON containing metadata required for training
+        channel_names = {
+            0: "CT"
+        }
+        generate_dataset_json(
+            path_to_output_base,
+            channel_names,
+            labels=self.params['labels'],
+            num_training_cases=studies_count,
+            file_ending='.nii.gz',
+            dataset_name=self.params['task_name'],
+            reference='https://wiki.cancerimagingarchive.net/pages/viewpage.action?pageId=19726546',
+            description=self.params['description']
+        )
+        # Manual split
+        splits = []
+        if not seed:
+            seed = random.randint(0, 2**16 - 1)
+        random.seed(seed)
+        random.shuffle(identifiers)
+        for fold in tqdm(range(5)):
+            val_studies = identifiers[fold :: 5]
+            splits.append(
+                {
+                    'train': [i for i in identifiers if i not in val_studies],
+                    'val': val_studies
+                }
+            )
+        path_to_output = Path(nnUNet_preprocessed) / foldername
+        path_to_output.mkdir(exist_ok=True)
+        with open(path_to_output / 'splits_final.json', 'w') as f:
+            json.dump(splits, f, sort_keys=False, indent=4)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""Convert original CT datasets into the nnUnet format.""",
@@ -242,7 +315,7 @@ if __name__ == "__main__":
         'dataset',
         choices=[
             'msd-liver', 'msd-lung', 'msd-pancreas', 'msd-colon',
-            'kits19'
+            'kits19', 'ct-lymph-nodes'
         ],
         help="""Dataset to be converted. This option sets the parameters
         for conversion."""
@@ -293,3 +366,12 @@ if __name__ == "__main__":
     elif args.dataset == 'kits19':
         converter = KiTS19Converter()
         converter.convert_dataset(args.path_to_cts, args.seed)
+    elif args.dataset == 'ct-lymph-nodes':
+        if not args.path_to_masks:
+            raise ValueError("Path to mask volumes must be specified.")
+        converter = CTLymphNodesConverter()
+        converter.convert_dataset(
+            args.path_to_cts,
+            args.path_to_masks,
+            args.seed
+        )
