@@ -38,11 +38,10 @@ class DC_and_CE_loss(nn.Module):
         if self.ignore_label is not None:
             assert target.shape[1] == 1, 'ignore label is not implemented for one hot encoded target variables ' \
                                          '(DC_and_CE_loss)'
-            mask = (target != self.ignore_label).bool()
+            mask = target != self.ignore_label
             # remove ignore label from target, replace with one of the known labels. It doesn't matter because we
             # ignore gradients in those areas anyway
-            target_dice = torch.clone(target)
-            target_dice[target == self.ignore_label] = 0
+            target_dice = torch.where(mask, target, 0)
             num_fg = mask.sum()
         else:
             target_dice = target
@@ -50,7 +49,7 @@ class DC_and_CE_loss(nn.Module):
 
         dc_loss = self.dc(net_output, target_dice, loss_mask=mask) \
             if self.weight_dice != 0 else 0
-        ce_loss = self.ce(net_output, target[:, 0].long()) \
+        ce_loss = self.ce(net_output, target[:, 0]) \
             if self.weight_ce != 0 and (self.ignore_label is None or num_fg > 0) else 0
 
         result = self.weight_ce * ce_loss + self.weight_dice * dc_loss
@@ -84,14 +83,20 @@ class DC_and_BCE_loss(nn.Module):
     def forward(self, net_output: torch.Tensor, target: torch.Tensor):
         if self.use_ignore_label:
             # target is one hot encoded here. invert it so that it is True wherever we can compute the loss
-            mask = (1 - target[:, -1:]).bool()
+            if target.dtype == torch.bool:
+                mask = ~target[:, -1:]
+            else:
+                mask = (1 - target[:, -1:]).bool()
             # remove ignore channel now that we have the mask
-            target_regions = torch.clone(target[:, :-1])
+            # why did we use clone in the past? Should have documented that...
+            # target_regions = torch.clone(target[:, :-1])
+            target_regions = target[:, :-1]
         else:
             target_regions = target
             mask = None
 
         dc_loss = self.dc(net_output, target_regions, loss_mask=mask)
+        target_regions = target_regions.float()
         if mask is not None:
             ce_loss = (self.ce(net_output, target_regions) * mask).sum() / torch.clip(mask.sum(), min=1e-8)
         else:
