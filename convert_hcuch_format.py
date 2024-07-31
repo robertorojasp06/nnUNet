@@ -1,0 +1,219 @@
+import numpy as np
+import SimpleITK as sitk
+import json
+import argparse
+import shutil
+import random
+from pathlib import Path
+from tqdm import tqdm
+
+from nnunetv2.dataset_conversion.generate_dataset_json import generate_dataset_json
+from nnunetv2.paths import nnUNet_raw, nnUNet_preprocessed
+
+
+class HcuchConverter:
+    """Convert format of HCUCH dataset into nnunet format."""
+    def __init__(self) -> None:
+        self.params = {
+            'nnunet_dataset_id': 513,
+            'task_name': 'HCUCH_Lesions',
+            'labels': {
+                "background": 0,
+                "tumor": 1,
+                "adenopathy": 2
+            },
+            'description': (
+                "CT studies from HCUCH - FONDEF ID23|10337"
+            )
+        }
+        self.fname_extension = '.nii.gz'
+
+    @property
+    def foldername(self):
+        return f"Dataset{self.params['nnunet_dataset_id']:03d}_{self.params['task_name']}"
+
+    @property
+    def path_to_output_base(self):
+        return Path(nnUNet_raw) / self.foldername
+
+    def _transform_mask(self, path_to_mask, path_to_mask_labels):
+        # Find all integers belonging to tumor and adenopathy
+        label_groups = {
+            "tumor": [],
+            "adenopathy": []
+        }
+        with open(path_to_mask_labels, 'r') as file:
+            labels = json.load(file)
+        for label_value, label_name in labels.items():
+            if label_name.split(',')[0] in ['p', 'm']:
+                label_groups['tumor'].append(int(label_value))
+            elif label_name.split(',')[0] == 'n':
+                label_groups['adenopathy'].append(int(label_value))
+            else:
+                raise ValueError(f"{path_to_mask_labels.name} has unexpected label name: {label_name}")
+        # Transform mask to have "tumor" and "adenopathy" label values
+        mask_image = sitk.ReadImage(path_to_mask)
+        mask_array = sitk.GetArrayFromImage(mask_image)
+        final_mask_array = np.zeros(mask_array.shape, dtype=mask_array.dtype)
+        for label_name, label_values in label_groups.items():
+            indices = np.isin(mask_array, label_values)
+            final_mask_array[indices] = self.params['labels'][label_name]
+        final_mask_image = sitk.GetImageFromArray(final_mask_array)
+        final_mask_image.CopyInformation(mask_image)
+        return final_mask_image
+
+    def convert_dataset(self, path_to_cts, path_to_masks, path_to_labels,
+                        seed=None):
+        # Set up output folders
+        path_to_output_cts = self.path_to_output_base / "imagesTr"
+        path_to_output_masks = self.path_to_output_base / "labelsTr"
+        path_to_output_cts.mkdir(parents=True, exist_ok=True)
+        path_to_output_masks.mkdir(exist_ok=True)
+        identifiers = []
+        for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
+            identifier = path_to_source_ct.name.split(self.fname_extension)[0]
+            identifiers.append(identifier)
+            # Copy data volumes with proper filename format
+            path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
+            shutil.copy(path_to_source_ct, path_to_dest_ct)
+            # Update mask according to the labels
+            converted_mask_image = self._transform_mask(
+                Path(path_to_masks) / path_to_source_ct.name,
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+            )
+            sitk.WriteImage(
+                converted_mask_image,
+                path_to_output_masks / f"{identifier}{self.fname_extension}"
+            )
+        # Generate JSON containing metadata required for training
+        channel_names = {
+            0: "CT"
+        }
+        generate_dataset_json(
+            self.path_to_output_base,
+            channel_names,
+            labels=self.params['labels'],
+            num_training_cases=len(identifiers),
+            file_ending=self.fname_extension,
+            dataset_name=self.params['task_name'],
+            reference='HCUCH data',
+            description=self.params['description']
+        )
+        # Manual split
+        splits = []
+        if not seed:
+            seed = random.randint(0, 2**16 - 1)
+        random.seed(seed)
+        random.shuffle(identifiers)
+        for fold in tqdm(range(5)):
+            val_studies = identifiers[fold :: 5]
+            splits.append(
+                {
+                    'train': [i for i in identifiers if i not in val_studies],
+                    'val': val_studies
+                }
+            )
+        path_to_output = Path(nnUNet_preprocessed) / self.foldername
+        path_to_output.mkdir(exist_ok=True)
+        with open(path_to_output / 'splits_final.json', 'w') as f:
+            json.dump(splits, f, sort_keys=False, indent=4)
+
+    def convert_test_set(self, path_to_cts, path_to_masks, path_to_labels):
+        # Set up output folders
+        path_to_output_cts = self.path_to_output_base / "imagesTs"
+        path_to_output_masks = self.path_to_output_base / "labelsTs"
+        path_to_output_cts.mkdir(parents=True, exist_ok=True)
+        path_to_output_masks.mkdir(exist_ok=True)
+        identifiers = []
+        for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
+            identifier = path_to_source_ct.name.split(self.fname_extension)[0]
+            identifiers.append(identifier)
+            # Copy data volumes with proper filename format
+            path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
+            shutil.copy(path_to_source_ct, path_to_dest_ct)
+            # Update mask according to the labels
+            converted_mask_image = self._transform_mask(
+                Path(path_to_masks) / path_to_source_ct.name,
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+            )
+            sitk.WriteImage(
+                converted_mask_image,
+                path_to_output_masks / f"{identifier}{self.fname_extension}"
+            )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="""Convert original CT dataset from HCUCH into the nnUnet format.""",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        'path_to_cts',
+        type=str,
+        help="""Path to the folder containing original CT volumes in
+        NIfTI format."""
+    )
+    parser.add_argument(
+        'path_to_masks',
+        type=str,
+        help="""Path to the folder containing original mask volumes in
+        NIfTI format."""
+    )
+    parser.add_argument(
+        'path_to_labels',
+        type=str,
+        help="""Path to the folder containing JSON files with labels for
+        each mask."""
+    )
+    parser.add_argument(
+        '--path_to_test_cts',
+        default=None,
+        type=str,
+        help="""Path to the folder containing original CT volumes in
+        NIfTI format from the testing set."""
+    )
+    parser.add_argument(
+        '--path_to_test_masks',
+        default=None,
+        type=str,
+        help="""Path to the folder containing original mask volumes in
+        NIfTI format from the testing set."""
+    )
+    parser.add_argument(
+        '--path_to_test_labels',
+        default=None,
+        type=str,
+        help="""Path to the folder containing JSON files with labels for
+        each mask from the testing set."""
+    )    
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=100,
+        help="""Seed value for reproducibility in manual split for cross
+        validation."""
+    )
+    args = parser.parse_args()
+    testing_set_args = [
+        args.path_to_test_cts,
+        args.path_to_test_masks,
+        args.path_to_test_labels
+    ]
+    if any(testing_set_args) and not all(testing_set_args):
+        parser.error(
+            "If any of --path_to_test_cts, --path_to_test_masks, "
+            "or --path_to_test_labels are set, then all must be set."
+        )
+    converter = HcuchConverter()
+    converter.convert_dataset(
+        args.path_to_cts,
+        args.path_to_masks,
+        args.path_to_labels,
+        args.seed
+    )
+    if all(testing_set_args):
+        converter.convert_test_set(
+            args.path_to_test_cts,
+            args.path_to_test_masks,
+            args.path_to_test_labels
+        )
