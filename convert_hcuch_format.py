@@ -6,17 +6,86 @@ import shutil
 import random
 from pathlib import Path
 from tqdm import tqdm
+from typing import Optional, Union, Dict
 
 from nnunetv2.dataset_conversion.generate_dataset_json import generate_dataset_json
 from nnunetv2.paths import nnUNet_raw, nnUNet_preprocessed
 
 
+WINDOWS = {
+	"lung": {"L": -500, "W": 1400},
+	"abdomen": {"L": 40, "W": 350},
+	"bone": {"L": 400, "W": 1000},
+	"air": {"L": -426, "W": 1000},
+	"brain": {"L": 50, "W": 100},
+	"mediastinum": {"L": 50, "W": 350}
+}
+
+
+def get_windows_mapping(window_arg: str, path_to_cts: str):
+	if window_arg not in WINDOWS:
+		with open(window_arg, 'r') as file:
+			mapping = json.load(file)
+	else:
+		mapping = {
+			path.name: window_arg
+			for path in Path(path_to_cts).glob('*.nii.gz')
+		}
+	return mapping
+
+
+def check_windows_mapping(mapping: Dict[str, str], path_to_cts: str):
+	# Check wrong windows
+	wrong_windows = [
+		f"filename '{filename}' with wrong window '{window}'."
+		for filename, window in mapping.items()
+		if window not in WINDOWS
+	]
+	if wrong_windows:
+		raise ValueError('\n'.join(wrong_windows))
+	# Check all CTs have their corresponding window
+	unassigned_cts = [
+		f"filename '{path.name}' does not have a window assigned."
+		for path in Path(path_to_cts).glob('*.nii.gz')
+		if path.name not in mapping.keys()
+	]
+	if unassigned_cts:
+		raise ValueError('\n'.join(unassigned_cts))
+
+
+def normalize_ct(
+    ct_array: np.ndarray,
+    window: Optional[Dict[str, Union[int, float]]] = None,
+    epsilon: float = 1e-6
+) -> np.ndarray:
+    if window:
+        lower_bound = window["L"] - window["W"] / 2
+        upper_bound = window["L"] + window["W"] / 2
+        ct_array_pre = np.clip(ct_array, lower_bound, upper_bound)
+        ct_array_pre = (
+            (ct_array_pre - np.min(ct_array_pre) + epsilon)
+            / (np.max(ct_array_pre) - np.min(ct_array_pre) + epsilon)
+            * 255.0
+        )
+    else:
+        lower_bound= np.percentile(ct_array[ct_array > 0], 0.5)
+        upper_bound = np.percentile(ct_array[ct_array > 0], 99.5)
+        ct_array_pre = np.clip(ct_array, lower_bound, upper_bound)
+        ct_array_pre = (
+            (ct_array_pre - np.min(ct_array_pre) + epsilon)
+            / (np.max(ct_array_pre) - np.min(ct_array_pre) + epsilon)
+            * 255.0
+        )
+        ct_array_pre[ct_array == 0] = 0
+    return np.uint8(ct_array_pre)
+
+
 class HcuchConverter:
     """Convert format of HCUCH dataset into nnunet format."""
-    def __init__(self) -> None:
+    def __init__(self, dataset_id=513, task_name='HCUCH_Lesions') -> None:
         self.params = {
-            'nnunet_dataset_id': 513,
-            'task_name': 'HCUCH_Lesions',
+            'nnunet_dataset_id': dataset_id,
+            'task_name': task_name,
             'labels': {
                 "background": 0,
                 "tumor": 1,
@@ -63,7 +132,7 @@ class HcuchConverter:
         return final_mask_image
 
     def convert_dataset(self, path_to_cts, path_to_masks, path_to_labels,
-                        seed=None):
+                        windows_mapping=None, seed=None):
         # Set up output folders
         path_to_output_cts = self.path_to_output_base / "imagesTr"
         path_to_output_masks = self.path_to_output_base / "labelsTr"
@@ -73,9 +142,21 @@ class HcuchConverter:
         for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
             identifier = path_to_source_ct.name.split(self.fname_extension)[0]
             identifiers.append(identifier)
-            # Copy data volumes with proper filename format
+            # Copy data volumes with proper filename format (or normalize CT if required)
             path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
-            shutil.copy(path_to_source_ct, path_to_dest_ct)
+            if windows_mapping:
+                ct_image = sitk.ReadImage(path_to_source_ct)
+                ct_array = sitk.GetArrayFromImage(ct_image)
+                window_name = windows_mapping.get(path_to_source_ct.name)
+                ct_array_norm = normalize_ct(ct_array, WINDOWS.get(window_name))
+                ct_image_norm = sitk.GetImageFromArray(ct_array_norm)
+                ct_image_norm.CopyInformation(ct_image)
+                sitk.WriteImage(
+                    ct_image_norm,
+                    path_to_dest_ct
+                )
+            else:
+                shutil.copy(path_to_source_ct, path_to_dest_ct)
             # Update mask according to the labels
             converted_mask_image = self._transform_mask(
                 Path(path_to_masks) / path_to_source_ct.name,
@@ -118,7 +199,8 @@ class HcuchConverter:
         with open(path_to_output / 'splits_final.json', 'w') as f:
             json.dump(splits, f, sort_keys=False, indent=4)
 
-    def convert_test_set(self, path_to_cts, path_to_masks, path_to_labels):
+    def convert_test_set(self, path_to_cts, path_to_masks, path_to_labels,
+                         windows_mapping=None):
         # Set up output folders
         path_to_output_cts = self.path_to_output_base / "imagesTs"
         path_to_output_masks = self.path_to_output_base / "labelsTs"
@@ -128,9 +210,21 @@ class HcuchConverter:
         for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
             identifier = path_to_source_ct.name.split(self.fname_extension)[0]
             identifiers.append(identifier)
-            # Copy data volumes with proper filename format
+            # Copy data volumes with proper filename format (or normalize CT if required)
             path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
-            shutil.copy(path_to_source_ct, path_to_dest_ct)
+            if windows_mapping:
+                ct_image = sitk.ReadImage(path_to_source_ct)
+                ct_array = sitk.GetArrayFromImage(ct_image)
+                window_name = windows_mapping.get(path_to_source_ct.name)
+                ct_array_norm = normalize_ct(ct_array, WINDOWS.get(window_name))
+                ct_image_norm = sitk.GetImageFromArray(ct_array_norm)
+                ct_image_norm.CopyInformation(ct_image)
+                sitk.WriteImage(
+                    ct_image_norm,
+                    path_to_dest_ct
+                )
+            else:
+                shutil.copy(path_to_source_ct, path_to_dest_ct)
             # Update mask according to the labels
             converted_mask_image = self._transform_mask(
                 Path(path_to_masks) / path_to_source_ct.name,
@@ -185,7 +279,28 @@ if __name__ == "__main__":
         type=str,
         help="""Path to the folder containing JSON files with labels for
         each mask from the testing set."""
-    )    
+    )
+    parser.add_argument(
+		'--window',
+		type=str,
+        default=None,
+		help=f"""Window for CT normalization: {list(WINDOWS.keys())}.
+		This window is applied on all CTs. Alternatively, you can provide
+		the path to a JSON file with a dictionary containing the
+		mapping between filenames and windows."""
+	)
+    parser.add_argument(
+         '--dataset_id',
+         type=int,
+         default=513,
+         help="Dataset ID. Used to give a name to the data folders."
+    )
+    parser.add_argument(
+         '--task_name',
+         type=str,
+         default='HCUCH_Lesions',
+         help="Task name. Used to give a name to the data folders."
+    )
     parser.add_argument(
         '--seed',
         type=int,
@@ -204,16 +319,32 @@ if __name__ == "__main__":
             "If any of --path_to_test_cts, --path_to_test_masks, "
             "or --path_to_test_labels are set, then all must be set."
         )
-    converter = HcuchConverter()
+    if args.window:
+        windows_mapping = get_windows_mapping(
+            args.window,
+            args.path_to_cts
+        )
+        check_windows_mapping(
+             windows_mapping,
+             args.path_to_cts
+        )
+    else:
+         windows_mapping = None
+    converter = HcuchConverter(
+         args.dataset_id,
+         args.task_name
+    )
     converter.convert_dataset(
         args.path_to_cts,
         args.path_to_masks,
         args.path_to_labels,
-        args.seed
+        windows_mapping=windows_mapping,
+        seed=args.seed
     )
     if all(testing_set_args):
         converter.convert_test_set(
             args.path_to_test_cts,
             args.path_to_test_masks,
-            args.path_to_test_labels
+            args.path_to_test_labels,
+            windows_mapping=windows_mapping
         )
