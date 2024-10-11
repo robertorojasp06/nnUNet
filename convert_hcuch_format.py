@@ -82,20 +82,36 @@ def normalize_ct(
 
 class HcuchConverter:
     """Convert format of HCUCH dataset into nnunet format."""
-    def __init__(self, dataset_id=513, task_name='HCUCH_Lesions') -> None:
+    def __init__(self, dataset_id=513, task_name='HCUCH_Lesions',
+                 channel_name="CT", unique_label=None) -> None:
         self.params = {
             'nnunet_dataset_id': dataset_id,
             'task_name': task_name,
-            'labels': {
-                "background": 0,
-                "tumor": 1,
-                "adenopathy": 2
+            'channel_names': {
+                0: channel_name
             },
             'description': (
                 "CT studies from HCUCH - FONDEF ID23|10337"
             )
         }
         self.fname_extension = '.nii.gz'
+        self.unique_label = unique_label
+        if unique_label == 'tumor':
+             self.params['labels'] = {
+                "background": 0,
+                "tumor": 1
+            }
+        elif unique_label == 'adenopathy':
+             self.params['labels'] = {
+                "background": 0,
+                "adenopathy": 1
+            }
+        else:
+             self.params['labels'] = {
+                "background": 0,
+                "tumor": 1,
+                "adenopathy": 2
+            }
 
     @property
     def foldername(self):
@@ -104,6 +120,15 @@ class HcuchConverter:
     @property
     def path_to_output_base(self):
         return Path(nnUNet_raw) / self.foldername
+
+    @property
+    def unique_label(self):
+         return self._unique_label
+
+    @unique_label.setter
+    def unique_label(self, value):
+        assert value in ["tumor", "adenopathy", None]
+        self._unique_label = value
 
     def _transform_mask(self, path_to_mask, path_to_mask_labels):
         # Find all integers belonging to tumor and adenopathy
@@ -124,6 +149,12 @@ class HcuchConverter:
         mask_image = sitk.ReadImage(path_to_mask)
         mask_array = sitk.GetArrayFromImage(mask_image)
         final_mask_array = np.zeros(mask_array.shape, dtype=mask_array.dtype)
+        if self.unique_label:
+             label_groups = {
+                  key: value
+                  for key, value in label_groups.items()
+                  if key == self.unique_label
+             }
         for label_name, label_values in label_groups.items():
             indices = np.isin(mask_array, label_values)
             final_mask_array[indices] = self.params['labels'][label_name]
@@ -140,8 +171,21 @@ class HcuchConverter:
         path_to_output_masks.mkdir(exist_ok=True)
         identifiers = []
         for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
+            # Update mask according to the labels
+            converted_mask_image = self._transform_mask(
+                Path(path_to_masks) / path_to_source_ct.name,
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+            )
+            # Full zero masks are discarded
+            if sitk.GetArrayFromImage(converted_mask_image).sum() == 0:
+                 continue
+            # Build the CT identifier and write the converted mask
             identifier = path_to_source_ct.name.split(self.fname_extension)[0]
             identifiers.append(identifier)
+            sitk.WriteImage(
+                converted_mask_image,
+                path_to_output_masks / f"{identifier}{self.fname_extension}"
+            )
             # Copy data volumes with proper filename format (or normalize CT if required)
             path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
             if windows_mapping:
@@ -157,22 +201,10 @@ class HcuchConverter:
                 )
             else:
                 shutil.copy(path_to_source_ct, path_to_dest_ct)
-            # Update mask according to the labels
-            converted_mask_image = self._transform_mask(
-                Path(path_to_masks) / path_to_source_ct.name,
-                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
-            )
-            sitk.WriteImage(
-                converted_mask_image,
-                path_to_output_masks / f"{identifier}{self.fname_extension}"
-            )
         # Generate JSON containing metadata required for training
-        channel_names = {
-            0: "CT"
-        }
         generate_dataset_json(
             self.path_to_output_base,
-            channel_names,
+            self.params['channel_names'],
             labels=self.params['labels'],
             num_training_cases=len(identifiers),
             file_ending=self.fname_extension,
@@ -208,8 +240,21 @@ class HcuchConverter:
         path_to_output_masks.mkdir(exist_ok=True)
         identifiers = []
         for path_to_source_ct in tqdm(list(Path(path_to_cts).glob(f"*{self.fname_extension}"))):
+            # Update mask according to the labels
+            converted_mask_image = self._transform_mask(
+                Path(path_to_masks) / path_to_source_ct.name,
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+            )
+            # Full zero masks are discarded
+            if sitk.GetArrayFromImage(converted_mask_image).sum() == 0:
+                 continue
+            # Build the CT identifier and write the converted mask
             identifier = path_to_source_ct.name.split(self.fname_extension)[0]
             identifiers.append(identifier)
+            sitk.WriteImage(
+                converted_mask_image,
+                path_to_output_masks / f"{identifier}{self.fname_extension}"
+            )
             # Copy data volumes with proper filename format (or normalize CT if required)
             path_to_dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
             if windows_mapping:
@@ -225,15 +270,6 @@ class HcuchConverter:
                 )
             else:
                 shutil.copy(path_to_source_ct, path_to_dest_ct)
-            # Update mask according to the labels
-            converted_mask_image = self._transform_mask(
-                Path(path_to_masks) / path_to_source_ct.name,
-                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
-            )
-            sitk.WriteImage(
-                converted_mask_image,
-                path_to_output_masks / f"{identifier}{self.fname_extension}"
-            )
 
 
 if __name__ == "__main__":
@@ -290,6 +326,26 @@ if __name__ == "__main__":
 		mapping between filenames and windows."""
 	)
     parser.add_argument(
+         '--channel_name',
+         type=str,
+         default='CT',
+         help="""This is a field of the dataset.json file. The specific
+         name determines the normalization scheme followed by the nnUNet
+         pipeline. List of currently available names: 'CT', 'noNorm',
+         'rescale_to_0_1', 'rgb_to_0_1', 'zscore'. Any name not included
+         produces the default 'zscore' normalization (once nnUNet is run).
+         If you normalize your CTs using the 'window' parameter from this script,
+         then set this parameter to 'noNorm'."""
+    )
+    parser.add_argument(
+         '--unique_label',
+         type=str,
+         choices=['tumor', 'adenopathy'],
+         default=None,
+         help="""Set this flag to obtain masks only with annotations from
+         the specified label. By default, both labels are included."""
+    )
+    parser.add_argument(
          '--dataset_id',
          type=int,
          default=513,
@@ -332,7 +388,9 @@ if __name__ == "__main__":
          windows_mapping = None
     converter = HcuchConverter(
          args.dataset_id,
-         args.task_name
+         args.task_name,
+         args.channel_name,
+         args.unique_label
     )
     converter.convert_dataset(
         args.path_to_cts,
