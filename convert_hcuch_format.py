@@ -133,7 +133,8 @@ class HcuchConverter:
         assert value in ["tumor", "adenopathy", None]
         self._unique_label = value
 
-    def _transform_mask(self, path_to_mask, path_to_mask_labels):
+    def _transform_mask(self, path_to_mask, path_to_mask_labels,
+                        requested_labels=None):
         # Find all integers belonging to tumor and adenopathy
         label_groups = {
             "tumor": [],
@@ -141,6 +142,19 @@ class HcuchConverter:
         }
         with open(path_to_mask_labels, 'r') as file:
             labels = json.load(file)
+        # Filter labels according to requested labels
+        labels = {
+            key: value
+            for key, value in labels.items()
+            if ','.join([item.strip() for item in value.split(',')]) in requested_labels
+        }
+        if not labels:
+            mask_image = sitk.ReadImage(path_to_mask)
+            mask_array = sitk.GetArrayFromImage(mask_image)
+            final_mask_array = np.zeros(mask_array.shape, dtype=mask_array.dtype)
+            final_mask_image = sitk.GetImageFromArray(final_mask_array)
+            final_mask_image.CopyInformation(mask_image)
+            return final_mask_image
         for label_value, label_name in labels.items():
             if label_name.split(',')[0] in ['p', 'm']:
                 label_groups['tumor'].append(int(label_value))
@@ -166,7 +180,8 @@ class HcuchConverter:
         return final_mask_image
 
     def convert_dataset(self, path_to_cts, path_to_masks, path_to_labels,
-                        windows_mapping=None, seed=None):
+                        windows_mapping=None, seed=None,
+                        requested_labels=None):
         # Set up output folders
         path_to_output_cts = self.path_to_output_base / "imagesTr"
         path_to_output_masks = self.path_to_output_base / "labelsTr"
@@ -177,7 +192,8 @@ class HcuchConverter:
             # Update mask according to the labels
             converted_mask_image = self._transform_mask(
                 Path(path_to_masks) / path_to_source_ct.name,
-                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json",
+                requested_labels
             )
             # Full zero masks are discarded
             if sitk.GetArrayFromImage(converted_mask_image).sum() == 0:
@@ -235,7 +251,7 @@ class HcuchConverter:
             json.dump(splits, f, sort_keys=False, indent=4)
 
     def convert_test_set(self, path_to_cts, path_to_masks, path_to_labels,
-                         windows_mapping=None):
+                         windows_mapping=None, requested_labels=None):
         # Set up output folders
         path_to_output_cts = self.path_to_output_base / "imagesTs"
         path_to_output_masks = self.path_to_output_base / "labelsTs"
@@ -246,7 +262,8 @@ class HcuchConverter:
             # Update mask according to the labels
             converted_mask_image = self._transform_mask(
                 Path(path_to_masks) / path_to_source_ct.name,
-                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json"
+                Path(path_to_labels) / f"{path_to_source_ct.name.split(self.fname_extension)[0]}.json",
+                requested_labels
             )
             # Full zero masks are discarded
             if sitk.GetArrayFromImage(converted_mask_image).sum() == 0:
@@ -349,6 +366,15 @@ if __name__ == "__main__":
          the specified label. By default, both labels are included."""
     )
     parser.add_argument(
+        '--requested_labels',
+        type=str,
+        nargs='+',
+        default=None,
+        help="""Only annotations of the specified labels are considered from
+        each JSON file. If a JSON file does not have any of the specified labels,
+        then the CT image and mask are discarded."""
+    )
+    parser.add_argument(
          '--dataset_id',
          type=int,
          default=513,
@@ -408,12 +434,14 @@ if __name__ == "__main__":
         args.path_to_masks,
         args.path_to_labels,
         windows_mapping=windows_mapping,
-        seed=args.seed
+        seed=args.seed,
+        requested_labels=args.requested_labels
     )
     if all(testing_set_args):
         converter.convert_test_set(
             args.path_to_test_cts,
             args.path_to_test_masks,
             args.path_to_test_labels,
-            windows_mapping=windows_mapping
+            windows_mapping=windows_mapping,
+            requested_labels=args.requested_labels
         )
