@@ -156,7 +156,7 @@ class HcuchConverter:
             final_mask_image.CopyInformation(mask_image)
             return final_mask_image
         for label_value, label_name in labels.items():
-            if label_name.split(',')[0] in ['p', 'm']:
+            if label_name.split(',')[0] in ['t', 'm']:
                 label_groups['tumor'].append(int(label_value))
             elif label_name.split(',')[0] == 'n':
                 label_groups['adenopathy'].append(int(label_value))
