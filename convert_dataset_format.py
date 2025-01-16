@@ -2,6 +2,8 @@ import argparse
 import json
 import shutil
 import random
+import SimpleITK as sitk
+import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
@@ -22,7 +24,8 @@ class MSDConverter:
             'description': (
                 "CT studies from dataset Task03_Liver hosted "
                 "by the Medical Segmentation Decathlon."
-            )
+            ),
+            'original_tumor_label': 2
         }
         self.lung_params = {
             'nnunet_dataset_id': 506,
@@ -34,7 +37,8 @@ class MSDConverter:
             'description': (
                 "CT studies from dataset Task06_Lung hosted "
                 "by the Medical Segmentation Decathlon."
-            )
+            ),
+            'original_tumor_label': 1
         }
         self.pancreas_params = {
             'nnunet_dataset_id': 507,
@@ -46,7 +50,8 @@ class MSDConverter:
             'description': (
                 "CT studies from dataset Task07_Pancreas hosted "
                 "by the Medical Segmentation Decathlon."
-            )
+            ),
+            'original_tumor_label': 2
         }
         self.colon_params = {
             'nnunet_dataset_id': 510,
@@ -58,9 +63,19 @@ class MSDConverter:
             'description': (
                 "CT studies from dataset Task10_Colon hosted "
                 "by the Medical Segmentation Decathlon."
-            )
+            ),
+            'original_tumor_label': 1
         }
         self.fname_extension = '.nii.gz'
+
+    def _convert_mask(self, path_to_mask, original_label, final_label):
+        """Return mask as a nifti image only with tumor label"""
+        mask_img = sitk.ReadImage(path_to_mask)
+        mask_array = sitk.GetArrayFromImage(mask_img)
+        new_mask_array = ((mask_array == original_label) * final_label).astype(mask_array.dtype)
+        new_img = sitk.GetImageFromArray(new_mask_array)
+        new_img.CopyInformation(mask_img)
+        return new_img
 
     def convert_dataset(self, path_to_cts, path_to_masks, seed=None, **kwargs):
         foldername = f"Dataset{kwargs['nnunet_dataset_id']:03d}_{kwargs['task_name']}"
@@ -73,15 +88,20 @@ class MSDConverter:
         # Copy data volumen with proper filename format
         studies_count = 0
         identifiers = []
-        studies = Path(path_to_cts).glob(f"*{self.fname_extension}")
+        studies = list(Path(path_to_cts).glob(f"*{self.fname_extension}"))
         for source_ct in tqdm(studies):
             source_mask = Path(path_to_masks) / source_ct.name
             identifier = f"{source_ct.name.split(self.fname_extension)[0]}"
             identifiers.append(identifier)
             dest_ct = path_to_output_cts / f"{identifier}_0000{self.fname_extension}"
-            dest_mask = path_to_output_masks / f"{identifier}{self.fname_extension}"       
+            dest_mask = path_to_output_masks / f"{identifier}{self.fname_extension}"
+            converted_mask_img = self._convert_mask(
+                source_mask,
+                kwargs['original_tumor_label'],
+                kwargs['labels']['tumor']
+            )
             shutil.copy(source_ct, dest_ct)
-            shutil.copy(source_mask, dest_mask)
+            sitk.WriteImage(converted_mask_img, dest_mask)
             studies_count += 1
         # Generate JSON containing metadata required for training
         channel_names = {
