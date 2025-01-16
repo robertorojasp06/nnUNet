@@ -99,22 +99,6 @@ class HcuchConverter:
         }
         self.fname_extension = '.nii.gz'
         self.unique_label = unique_label
-        if unique_label == 'tumor':
-             self.params['labels'] = {
-                "background": 0,
-                "tumor": 1
-            }
-        elif unique_label == 'adenopathy':
-             self.params['labels'] = {
-                "background": 0,
-                "adenopathy": 1
-            }
-        else:
-             self.params['labels'] = {
-                "background": 0,
-                "tumor": 1,
-                "adenopathy": 2
-            }
 
     @property
     def foldername(self):
@@ -131,6 +115,22 @@ class HcuchConverter:
     @unique_label.setter
     def unique_label(self, value):
         assert value in ["tumor", "adenopathy", None]
+        if value == 'tumor':
+             self.params['labels'] = {
+                "background": 0,
+                "tumor": 1
+            }
+        elif value == 'adenopathy':
+             self.params['labels'] = {
+                "background": 0,
+                "adenopathy": 1
+            }
+        else:
+             self.params['labels'] = {
+                "background": 0,
+                "tumor": 1,
+                "adenopathy": 2
+            }
         self._unique_label = value
 
     def _transform_mask(self, path_to_mask, path_to_mask_labels,
@@ -292,7 +292,7 @@ class HcuchConverter:
                 shutil.copy(path_to_source_ct, path_to_dest_ct)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="""Convert original CT dataset from HCUCH into the nnUnet format.""",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -445,3 +445,7 @@ if __name__ == "__main__":
             windows_mapping=windows_mapping,
             requested_labels=args.requested_labels
         )
+
+
+if __name__ == "__main__":
+    main()
